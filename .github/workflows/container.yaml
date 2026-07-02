@@ -10,7 +10,30 @@ on:
 
 jobs:
 
+  # Gate: lint + type-check + unit tests must pass before we build/deploy.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Lint
+        run: pnpm lint
+      - name: Type check
+        run: pnpm check-types
+      - name: Unit tests
+        run: pnpm test
+
   release-container:
+    needs: verify
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -35,6 +58,11 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Coolify tracks a stable tag; `latest` is published on the default
+          # branch so the Docker Image source can point at :latest.
+          tags: |
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
       - name: Build and push Docker image
         id: push
         uses: docker/build-push-action@v6
@@ -51,3 +79,16 @@ jobs:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME}}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
+
+  # Trigger Coolify to pull the freshly pushed image and redeploy.
+  # Runs on a self-hosted runner inside the LAN so it can reach the
+  # internal Coolify instance (GitHub-hosted runners cannot).
+  deploy:
+    needs: release-container
+    if: github.event_name == 'push'
+    runs-on: self-hosted
+    steps:
+      - name: Trigger Coolify deploy
+        run: |
+          curl --fail --request GET "${{ secrets.COOLIFY_WEBHOOK }}" \
+            --header "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}"
