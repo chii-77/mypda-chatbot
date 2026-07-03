@@ -79,6 +79,9 @@ export default function SignIn({
           <CardDescription className="text-center text-muted-foreground">
             {t("description")}
           </CardDescription>
+          <p className="text-center text-xs text-muted-foreground mt-1">
+            auto-deploy check 1
+          </p>
         </CardHeader>
         <CardContent className="flex flex-col">
           {emailAndPasswordEnabled && !isFirstUser && (
