@@ -80,7 +80,7 @@ export default function SignIn({
             {t("description")}
           </CardDescription>
           <p className="text-center text-xs text-muted-foreground mt-1">
-            auto-deploy check 1
+            auto-deploy check 2
           </p>
         </CardHeader>
         <CardContent className="flex flex-col">
