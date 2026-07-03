@@ -12,12 +12,12 @@ import { ChatGreeting } from "./chat-greeting";
 
 import { useShallow } from "zustand/shallow";
 import {
-  DefaultChatTransport,
   isToolUIPart,
   lastAssistantMessageIsCompleteWithToolCalls,
   TextUIPart,
   UIMessage,
 } from "ai";
+import { createChatTransport } from "lib/ai/opencode-runtime";
 
 import { safe } from "ts-safe";
 import { mutate } from "swr";
@@ -96,6 +96,7 @@ export default function ChatBot({ threadId, initialMessages }: Props) {
     threadMentions,
     pendingThreadMention,
     threadImageToolModel,
+    runtime,
   ] = appStore(
     useShallow((state) => [
       state.mutate,
@@ -107,6 +108,7 @@ export default function ChatBot({ threadId, initialMessages }: Props) {
       state.threadMentions,
       state.pendingThreadMention,
       state.threadImageToolModel,
+      state.runtime,
     ]),
   );
 
@@ -150,6 +152,10 @@ export default function ChatBot({ threadId, initialMessages }: Props) {
 
   const [input, setInput] = useState("");
 
+  // Always-current runtime so the transport can branch per-send (💬 vs ⚙️).
+  const runtimeRef = useRef(runtime);
+  runtimeRef.current = runtime;
+
   const {
     messages,
     status,
@@ -161,67 +167,73 @@ export default function ChatBot({ threadId, initialMessages }: Props) {
   } = useChat({
     id: threadId,
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
-    transport: new DefaultChatTransport({
-      prepareSendMessagesRequest: ({ messages, body, id }) => {
-        if (window.location.pathname !== `/chat/${threadId}`) {
-          console.log("replace-state");
-          window.history.replaceState({}, "", `/chat/${threadId}`);
-        }
-        const lastMessage = messages.at(-1)!;
-        // Filter out UI-only parts (e.g., source-url) so the model doesn't receive unknown parts
-        const attachments: ChatAttachment[] = lastMessage.parts.reduce(
-          (acc: ChatAttachment[], part: any) => {
-            if (part?.type === "file") {
-              acc.push({
-                type: "file",
-                url: part.url,
-                mediaType: part.mediaType,
-                filename: part.filename,
-              });
-            } else if (part?.type === "source-url") {
-              acc.push({
-                type: "source-url",
-                url: part.url,
-                mediaType: part.mediaType,
-                filename: part.title,
-              });
-            }
-            return acc;
-          },
-          [],
-        );
+    transport: createChatTransport(
+      {
+        prepareSendMessagesRequest: ({ messages, body, id }) => {
+          if (window.location.pathname !== `/chat/${threadId}`) {
+            console.log("replace-state");
+            window.history.replaceState({}, "", `/chat/${threadId}`);
+          }
+          const lastMessage = messages.at(-1)!;
+          // Filter out UI-only parts (e.g., source-url) so the model doesn't receive unknown parts
+          const attachments: ChatAttachment[] = lastMessage.parts.reduce(
+            (acc: ChatAttachment[], part: any) => {
+              if (part?.type === "file") {
+                acc.push({
+                  type: "file",
+                  url: part.url,
+                  mediaType: part.mediaType,
+                  filename: part.filename,
+                });
+              } else if (part?.type === "source-url") {
+                acc.push({
+                  type: "source-url",
+                  url: part.url,
+                  mediaType: part.mediaType,
+                  filename: part.title,
+                });
+              }
+              return acc;
+            },
+            [],
+          );
 
-        const sanitizedLastMessage = {
-          ...lastMessage,
-          parts: lastMessage.parts.filter((p: any) => p?.type !== "source-url"),
-        } as typeof lastMessage;
-        const hasFilePart = lastMessage.parts?.some(
-          (p) => (p as any)?.type === "file",
-        );
+          const sanitizedLastMessage = {
+            ...lastMessage,
+            parts: lastMessage.parts.filter(
+              (p: any) => p?.type !== "source-url",
+            ),
+          } as typeof lastMessage;
+          const hasFilePart = lastMessage.parts?.some(
+            (p) => (p as any)?.type === "file",
+          );
 
-        const requestBody: ChatApiSchemaRequestBody = {
-          ...body,
-          id,
-          chatModel:
-            (body as { model: ChatModel })?.model ?? latestRef.current.model,
-          toolChoice: latestRef.current.toolChoice,
-          allowedAppDefaultToolkit:
-            latestRef.current.mentions?.length || hasFilePart
-              ? []
-              : latestRef.current.allowedAppDefaultToolkit,
-          allowedMcpServers: latestRef.current.mentions?.length
-            ? {}
-            : latestRef.current.allowedMcpServers,
-          mentions: latestRef.current.mentions,
-          message: sanitizedLastMessage,
-          imageTool: {
-            model: latestRef.current.threadImageToolModel[threadId],
-          },
-          attachments,
-        };
-        return { body: requestBody };
+          const requestBody: ChatApiSchemaRequestBody = {
+            ...body,
+            id,
+            chatModel:
+              (body as { model: ChatModel })?.model ?? latestRef.current.model,
+            toolChoice: latestRef.current.toolChoice,
+            allowedAppDefaultToolkit:
+              latestRef.current.mentions?.length || hasFilePart
+                ? []
+                : latestRef.current.allowedAppDefaultToolkit,
+            allowedMcpServers: latestRef.current.mentions?.length
+              ? {}
+              : latestRef.current.allowedMcpServers,
+            mentions: latestRef.current.mentions,
+            runtime: latestRef.current.runtime,
+            message: sanitizedLastMessage,
+            imageTool: {
+              model: latestRef.current.threadImageToolModel[threadId],
+            },
+            attachments,
+          };
+          return { body: requestBody };
+        },
       },
-    }),
+      () => runtimeRef.current,
+    ),
     messages: initialMessages,
     generateId: generateUUID,
     experimental_throttle: 100,
@@ -249,6 +261,7 @@ export default function ChatBot({ threadId, initialMessages }: Props) {
     threadId,
     mentions: threadMentions[threadId],
     threadImageToolModel,
+    runtime,
   });
 
   const isLoading = useMemo(
