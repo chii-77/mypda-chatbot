@@ -178,8 +178,9 @@ export function ThreadDropdown({
                 </ChatExportPopup>
               </CommandItem>
               {/* Admin-only: promote this real conversation into the global,
-                  cross-account Replay/demo list (snapshot). */}
-              {isAdmin && (
+                  cross-account Replay/demo list (snapshot).
+                  Hidden per docs/DISABLED_FEATURES.md (UI_FLAGS.replay). */}
+              {UI_FLAGS.replay && isAdmin && (
                 <CommandItem
                   className="cursor-pointer p-0"
                   onSelect={handleAddToReplay}
