@@ -87,10 +87,10 @@ export function AppSidebarMenus({ user }: { user?: BasicUser }) {
             </SidebarMenuItem>
           </Tooltip>
         </SidebarMenu>
-        {/* MCP servers, flat (no collapse) and grouped by user-defined category
-            labels. Files / Memories are server panels. See app-sidebar-mcp.tsx.
-            Hidden per docs/DISABLED_FEATURES.md (UI_FLAGS.mcp); /mcp routes stay. */}
-        {UI_FLAGS.mcp && <AppSidebarMcp />}
+        {/* MCP: always shows the「MCP 管理儀表板」button (-> /mcp). The noisy
+            per-server list under it is gated by UI_FLAGS.mcpServerList inside
+            the component. See app-sidebar-mcp.tsx. */}
+        <AppSidebarMcp />
         {/* Global replay/demo conversations (shared across all accounts).
             Hidden per docs/DISABLED_FEATURES.md (UI_FLAGS.replay). */}
         {UI_FLAGS.replay && <AppSidebarReplay />}

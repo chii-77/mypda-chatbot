@@ -32,7 +32,7 @@ Applied: 2026-06-18 — all five flags set to `false` in `src/lib/ui-flags.ts`.
 | 11 | Tools dropdown「網頁搜尋 / Web search」toggle | `src/components/tool-select-dropdown.tsx` — `AppDefaultToolKitSelector` (WebSearch toolkit) | `webSearch` | hidden (2026-06-18) |
 | 12 | Tools dropdown「Code Execution」toggle | `src/components/tool-select-dropdown.tsx` — `AppDefaultToolKitSelector` (Code toolkit) | `codeExecution` | hidden (2026-06-18) |
 | 13 | Tools dropdown「HTTP Request」toggle | `src/components/tool-select-dropdown.tsx` — `AppDefaultToolKitSelector` (Http toolkit) | `httpRequest` | hidden (2026-06-18) |
-| 14 | Sidebar「MCP 伺服器管理 / MCP servers」list section | `app-sidebar-menus.tsx` (`<AppSidebarMcp/>`) | `mcp` | hidden (2026-07-06) |
+| 14 | Sidebar: the per-MCP-server LIST under the「MCP 管理儀表板」button (each row → `/mcp/test/[id]`, plus Files/Memories panels). The dashboard button itself stays. | `app-sidebar-mcp.tsx` (`groups.map` block) | `mcpServerList` | hidden (2026-07-06) |
 | 15 | Sidebar「重播 / Replay」demo list + admin thread-dropdown「新增到重播」entry | `app-sidebar-menus.tsx` (`<AppSidebarReplay/>`) and `thread-dropdown.tsx` (the `handleAddToReplay` `CommandItem`) | `replay` | hidden (2026-07-06) |
 
 ## Details & restore notes
@@ -57,11 +57,12 @@ Applied: 2026-06-18 — all five flags set to `false` in `src/lib/ui-flags.ts`.
    /mcp dashboard, the archive page, the auth-error page and the export
    preview). Both components now return `null` when the flag is off, so every
    usage — current or future — is covered in one place.
-14. **MCP servers sidebar section** — `<AppSidebarMcp/>` (the「MCP 伺服器管理」
-   list of connected servers that link to the `/mcp/test/[id]` tester). Only
-   the sidebar entry point is hidden; the `/mcp` dashboard, the
-   `/mcp/test/[id]` tool-tester pages and their API routes all remain reachable
-   directly. Restore = flip `mcp` back to `true`.
+14. **MCP per-server list** — inside `<AppSidebarMcp/>`, the「MCP 管理儀表板」
+   button (→ `/mcp`) ALWAYS renders; only the noisy list of connected servers
+   under it (each row → `/mcp/test/[id]`, plus the Files/Memories panels) is
+   gated by `mcpServerList`. The `/mcp` dashboard, `/mcp/test/[id]` tester pages
+   and their API routes all remain reachable regardless. Restore the per-server
+   list = flip `mcpServerList` back to `true`.
 15. **Replay** — the「重播」demo-conversation list in the sidebar
    (`<AppSidebarReplay/>`) plus the admin-only「新增到重播」item in the thread
    dropdown (`handleAddToReplay`). Both entry points are hidden. The

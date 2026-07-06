@@ -8,10 +8,11 @@ export const UI_FLAGS = {
   archive: false,
   // Sidebar「智能體 / Agents」list + 「創建智能體 / Create an agent」card
   agents: false,
-  // Sidebar「MCP 伺服器管理 / MCP servers」list section. Hidden from the
-  // sidebar per product decision; the /mcp dashboard and /mcp/test/[id]
-  // tester routes + API remain fully functional if visited directly.
-  mcp: false,
+  // Sidebar: the detailed per-MCP-server LIST under the「MCP 管理儀表板」button
+  // (grouped by category; each row links to /mcp/test/[id], plus Files/Memories
+  // panels). The dashboard button itself ALWAYS shows; this flag only controls
+  // the noisy per-server list. false = show just the dashboard button.
+  mcpServerList: false,
   // Sidebar「重播 / Replay」demo-conversation list + the admin thread-dropdown
   // 「新增到重播 / Add to replay」entry. Hidden per product decision; the
   // /replay/[id] viewer route, /api/replays API and DB table are left intact.
