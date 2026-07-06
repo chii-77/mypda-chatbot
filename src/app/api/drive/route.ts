@@ -47,9 +47,32 @@ function unwrap(result: any): any {
   return null;
 }
 
-async function callFiles(tool: string, args: Record<string, unknown> = {}) {
-  const id = await resolveFilesServerId();
+async function callFiles(
+  tool: string,
+  args: Record<string, unknown> = {},
+  serverId?: string,
+) {
+  const id = serverId ?? (await resolveFilesServerId());
   return unwrap(await mcpClientsManager.toolCall(id, tool, args));
+}
+
+// Recursively delete a folder: list one level, delete its files, recurse into
+// subfolders. Uses list_dir (display paths) + delete_file (raw keys) so E64
+// non-ASCII names are handled correctly. Server id resolved once by the caller.
+async function deleteFolderRecursive(
+  prefix: string,
+  serverId: string,
+): Promise<number> {
+  const listing = await callFiles("list_dir", { prefix }, serverId);
+  let n = 0;
+  for (const f of listing?.files ?? []) {
+    await callFiles("delete_file", { path: f.path }, serverId);
+    n++;
+  }
+  for (const sub of listing?.folders ?? []) {
+    n += await deleteFolderRecursive(sub.path, serverId);
+  }
+  return n;
 }
 
 function fail(error: unknown) {
@@ -104,15 +127,24 @@ export async function POST(request: Request) {
   }
 }
 
-// DELETE /api/drive?path=<raw storage key from list_dir files[].path>
+// DELETE /api/drive?path=<key>[&type=folder]
+//   file   (default): path = raw storage key from list_dir files[].path
+//   folder (type=folder): path = display path from list_dir folders[].path;
+//                         deletes every file under it recursively.
 export async function DELETE(request: Request) {
   const session = await getSession();
   if (!session?.user?.id)
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  const path = new URL(request.url).searchParams.get("path");
+  const url = new URL(request.url);
+  const path = url.searchParams.get("path");
   if (!path)
     return NextResponse.json({ error: "Missing path" }, { status: 400 });
   try {
+    if (url.searchParams.get("type") === "folder") {
+      const id = await resolveFilesServerId();
+      const deleted = await deleteFolderRecursive(path, id);
+      return NextResponse.json({ ok: true, deleted });
+    }
     const res = await callFiles("delete_file", { path });
     return NextResponse.json(res ?? { ok: true });
   } catch (error) {

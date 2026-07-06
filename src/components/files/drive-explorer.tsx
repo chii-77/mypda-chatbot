@@ -13,6 +13,9 @@ import { toast } from "sonner";
 import { useCallback, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import {
+  ArrowDown,
+  ArrowDownUp,
+  ArrowUp,
   ChevronRight,
   ChevronUp,
   Download,
@@ -20,14 +23,19 @@ import {
   FileText,
   FileSpreadsheet,
   Folder,
+  FolderOpen,
   HardDrive,
   LayoutGrid,
   List as ListIcon,
+  ListChecks,
   Loader2,
   MoreHorizontal,
   RefreshCw,
+  Square,
+  SquareCheckBig,
   Trash2,
   Upload,
+  X,
 } from "lucide-react";
 
 // ── types matching DataPilot list_dir (via /api/drive) ─────────────────────
@@ -46,6 +54,16 @@ type DriveListing = {
   files: DriveFile[];
 };
 
+type SortKey = "name" | "modified" | "size" | "type";
+const SORT_LABELS: [SortKey, string][] = [
+  ["name", "名稱"],
+  ["modified", "時間"],
+  ["size", "大小"],
+  ["type", "類型"],
+];
+
+const extOf = (n: string) => n.split(".").pop()?.toLowerCase() ?? "";
+
 function humanSize(n: number | null): string {
   if (n == null) return "";
   if (n < 1024) return `${n} B`;
@@ -55,7 +73,7 @@ function humanSize(n: number | null): string {
 
 function FileGlyph({ file, big }: { file: DriveFile; big?: boolean }) {
   const size = big ? "size-9" : "size-4";
-  const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+  const ext = extOf(file.name);
   const ct = file.content_type ?? "";
   let Icon = FileIcon;
   if (ext === "pdf" || ct.includes("pdf")) Icon = FileText;
@@ -64,6 +82,10 @@ function FileGlyph({ file, big }: { file: DriveFile; big?: boolean }) {
   else if (["md", "txt", "markdown"].includes(ext) || ct.startsWith("text/"))
     Icon = FileText;
   return <Icon className={cn(size, "shrink-0 text-muted-foreground")} />;
+}
+
+function downloadUrl(file: DriveFile) {
+  return `/api/files/download?path=${encodeURIComponent(file.path)}`;
 }
 
 // Per-file "⋯" menu — replaces desktop right-click with an on-screen control.
@@ -76,7 +98,6 @@ function FileMenu({
   onDelete: () => void;
   className?: string;
 }) {
-  const dl = `/api/files/download?path=${encodeURIComponent(file.path)}`;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -94,7 +115,7 @@ function FileMenu({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
         <DropdownMenuItem asChild>
-          <a href={dl}>
+          <a href={downloadUrl(file)}>
             <Download className="mr-2 size-4" />
             下載
           </a>
@@ -112,9 +133,56 @@ function FileMenu({
   );
 }
 
+// Per-folder "⋯" menu: open / delete the whole folder.
+function FolderMenu({
+  onOpen,
+  onDelete,
+  className,
+}: {
+  onOpen: () => void;
+  onDelete: () => void;
+  className?: string;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          title="更多"
+          onClick={(e) => e.stopPropagation()}
+          className={cn(
+            "rounded p-1 text-muted-foreground hover:bg-foreground/10 hover:text-foreground",
+            className,
+          )}
+        >
+          <MoreHorizontal className="size-4" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+        <DropdownMenuItem onSelect={onOpen}>
+          <FolderOpen className="mr-2 size-4" />
+          開啟
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          onSelect={onDelete}
+          className="text-destructive focus:text-destructive"
+        >
+          <Trash2 className="mr-2 size-4" />
+          刪除整個資料夾
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 export function DriveExplorer() {
   const [path, setPath] = useState(""); // current folder (display path, "" = root)
   const [view, setView] = useState<"grid" | "list">("grid");
+  const [sortBy, setSortBy] = useState<SortKey>("name");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -126,9 +194,29 @@ export function DriveExplorer() {
     { revalidateOnFocus: false, keepPreviousData: true },
   );
 
-  const folders = data?.folders ?? [];
-  const files = data?.files ?? [];
   const failed = !!error && !data;
+
+  const folders = useMemo(() => {
+    const arr = [...(data?.folders ?? [])];
+    arr.sort((a, b) => a.name.localeCompare(b.name, "zh-Hant"));
+    return sortDir === "desc" ? arr.reverse() : arr;
+  }, [data?.folders, sortDir]);
+
+  const files = useMemo(() => {
+    const arr = [...(data?.files ?? [])];
+    const cmp: Record<SortKey, (a: DriveFile, b: DriveFile) => number> = {
+      name: (a, b) => a.name.localeCompare(b.name, "zh-Hant"),
+      modified: (a, b) =>
+        (a.uploaded_at ?? "").localeCompare(b.uploaded_at ?? ""),
+      size: (a, b) => (a.size ?? 0) - (b.size ?? 0),
+      type: (a, b) =>
+        extOf(a.name).localeCompare(extOf(b.name)) ||
+        a.name.localeCompare(b.name, "zh-Hant"),
+    };
+    arr.sort(cmp[sortBy]);
+    return sortDir === "desc" ? arr.reverse() : arr;
+  }, [data?.files, sortBy, sortDir]);
+
   const empty =
     !isLoading && !failed && folders.length === 0 && files.length === 0;
 
@@ -144,6 +232,24 @@ export function DriveExplorer() {
     setPath((p) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : ""));
   }, []);
 
+  const navigate = useCallback((to: string) => {
+    setPath(to);
+    setSelected(new Set());
+  }, []);
+
+  function toggleSelect(p: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(p) ? next.delete(p) : next.add(p);
+      return next;
+    });
+  }
+
+  function exitSelect() {
+    setSelectMode(false);
+    setSelected(new Set());
+  }
+
   async function uploadFiles(list: FileList | File[]) {
     const arr = Array.from(list);
     if (!arr.length) return;
@@ -156,9 +262,8 @@ export function DriveExplorer() {
         if (path) fd.append("category", path); // upload into current folder
         const res = await fetch("/api/drive", { method: "POST", body: fd });
         const json = await res.json().catch(() => ({}));
-        if (!res.ok || json?.ok === false) {
+        if (!res.ok || json?.ok === false)
           throw new Error(json?.reason || json?.error || "上傳失敗");
-        }
         ok++;
       } catch (err: any) {
         toast.error(`${file.name}：${err.message}`);
@@ -170,9 +275,8 @@ export function DriveExplorer() {
     mutate();
   }
 
-  async function remove(f: DriveFile) {
+  async function removeFile(f: DriveFile) {
     if (!confirm(`確定刪除「${f.name}」？`)) return;
-    // optimistic: drop it from the current listing immediately
     mutate(
       (cur) =>
         cur
@@ -189,9 +293,81 @@ export function DriveExplorer() {
       toast.success("已刪除");
     } catch {
       toast.error("刪除失敗");
-      mutate(); // reconcile on failure
+      mutate();
     }
   }
+
+  async function removeFolder(f: DriveFolder) {
+    if (!confirm(`確定刪除整個資料夾「${f.name}」及其所有檔案？`)) return;
+    mutate(
+      (cur) =>
+        cur
+          ? { ...cur, folders: cur.folders.filter((x) => x.path !== f.path) }
+          : cur,
+      { revalidate: false },
+    );
+    try {
+      const res = await fetch(
+        `/api/drive?path=${encodeURIComponent(f.path)}&type=folder`,
+        { method: "DELETE" },
+      );
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.ok === false) throw new Error("刪除失敗");
+      toast.success(`已刪除資料夾（${json.deleted ?? 0} 個檔案）`);
+    } catch {
+      toast.error("刪除資料夾失敗");
+      mutate();
+    }
+  }
+
+  function batchDownload() {
+    files
+      .filter((f) => selected.has(f.path))
+      .forEach((f) => {
+        const a = document.createElement("a");
+        a.href = downloadUrl(f);
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      });
+  }
+
+  async function batchDelete() {
+    const picked = [...selected];
+    if (!picked.length) return;
+    if (!confirm(`確定刪除選取的 ${picked.length} 個檔案？`)) return;
+    mutate(
+      (cur) =>
+        cur
+          ? { ...cur, files: cur.files.filter((x) => !selected.has(x.path)) }
+          : cur,
+      { revalidate: false },
+    );
+    setSelected(new Set());
+    try {
+      await Promise.all(
+        picked.map((p) =>
+          fetch(`/api/drive?path=${encodeURIComponent(p)}`, {
+            method: "DELETE",
+          }),
+        ),
+      );
+      toast.success(`已刪除 ${picked.length} 個檔案`);
+    } catch {
+      toast.error("部分刪除失敗");
+    }
+    mutate();
+  }
+
+  function setSort(k: SortKey) {
+    if (k === sortBy) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else {
+      setSortBy(k);
+      setSortDir("asc");
+    }
+  }
+
+  const allSelected = files.length > 0 && selected.size === files.length;
 
   return (
     <div className="mx-auto flex h-full w-full max-w-5xl flex-col p-4 sm:p-6">
@@ -212,7 +388,7 @@ export function DriveExplorer() {
         <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto text-sm">
           <button
             type="button"
-            onClick={() => setPath("")}
+            onClick={() => navigate("")}
             className={cn(
               "flex items-center gap-1 rounded px-1.5 py-1 hover:bg-muted",
               !path && "font-semibold",
@@ -226,7 +402,7 @@ export function DriveExplorer() {
               <ChevronRight className="size-3.5 shrink-0 text-muted-foreground/60" />
               <button
                 type="button"
-                onClick={() => setPath(c.path)}
+                onClick={() => navigate(c.path)}
                 className={cn(
                   "truncate rounded px-1.5 py-1 hover:bg-muted",
                   c.path === path && "font-semibold",
@@ -242,6 +418,51 @@ export function DriveExplorer() {
         </div>
 
         <div className="flex shrink-0 items-center gap-1.5">
+          {/* sort */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                size="icon"
+                className="size-8"
+                title="排序"
+              >
+                <ArrowDownUp className="size-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {SORT_LABELS.map(([k, label]) => (
+                <DropdownMenuItem
+                  key={k}
+                  onSelect={(e) => {
+                    e.preventDefault();
+                    setSort(k);
+                  }}
+                >
+                  <span className="flex-1">{label}</span>
+                  {sortBy === k &&
+                    (sortDir === "asc" ? (
+                      <ArrowUp className="size-4" />
+                    ) : (
+                      <ArrowDown className="size-4" />
+                    ))}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          {/* select mode */}
+          <Button
+            variant={selectMode ? "secondary" : "outline"}
+            size="icon"
+            className="size-8"
+            title="選取"
+            onClick={() => (selectMode ? exitSelect() : setSelectMode(true))}
+          >
+            <ListChecks className="size-4" />
+          </Button>
+
+          {/* view toggle */}
           <div className="flex rounded-md border">
             <Button
               variant={view === "grid" ? "secondary" : "ghost"}
@@ -295,6 +516,45 @@ export function DriveExplorer() {
         </div>
       </div>
 
+      {/* selection action bar */}
+      {selectMode && (
+        <div className="mt-2 flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-1.5 text-sm">
+          <button
+            type="button"
+            className="rounded px-1.5 py-0.5 hover:bg-muted"
+            onClick={() =>
+              setSelected(
+                allSelected ? new Set() : new Set(files.map((f) => f.path)),
+              )
+            }
+          >
+            {allSelected ? "取消全選" : "全選"}
+          </button>
+          <span className="text-muted-foreground">已選 {selected.size} 項</span>
+          <div className="flex-1" />
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!selected.size}
+            onClick={batchDownload}
+          >
+            <Download className="size-4" /> 下載
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-destructive"
+            disabled={!selected.size}
+            onClick={batchDelete}
+          >
+            <Trash2 className="size-4" /> 刪除
+          </Button>
+          <Button variant="ghost" size="sm" onClick={exitSelect}>
+            <X className="size-4" /> 取消
+          </Button>
+        </div>
+      )}
+
       {/* body (drop zone) */}
       <div
         onDragOver={(e) => {
@@ -331,83 +591,164 @@ export function DriveExplorer() {
         ) : view === "grid" ? (
           <div className="grid grid-cols-[repeat(auto-fill,minmax(116px,1fr))] gap-1 p-3">
             {folders.map((f) => (
-              <button
-                key={f.path}
-                type="button"
-                onClick={() => setPath(f.path)}
-                className="group flex w-full min-w-0 flex-col items-center gap-1.5 rounded-lg p-2 text-center hover:bg-muted"
-              >
-                <Folder className="size-9 shrink-0 fill-muted-foreground/20 text-muted-foreground" />
-                <span className="line-clamp-2 w-full break-all text-xs leading-tight">
-                  {f.name}
-                </span>
-              </button>
-            ))}
-            {files.map((f) => (
               <div
                 key={f.path}
                 className="group relative flex w-full min-w-0 flex-col items-center gap-1.5 rounded-lg p-2 text-center hover:bg-muted"
               >
-                <a
-                  href={`/api/files/download?path=${encodeURIComponent(f.path)}`}
+                <button
+                  type="button"
+                  onClick={() => navigate(f.path)}
                   className="flex w-full min-w-0 flex-col items-center gap-1.5"
-                  title="點擊下載"
                 >
-                  <FileGlyph file={f} big />
+                  <Folder className="size-9 shrink-0 fill-muted-foreground/20 text-muted-foreground" />
                   <span className="line-clamp-2 w-full break-all text-xs leading-tight">
                     {f.name}
                   </span>
-                </a>
-                <FileMenu
-                  file={f}
-                  onDelete={() => remove(f)}
-                  className="absolute right-0.5 top-0.5 bg-background/80 opacity-0 transition-opacity group-hover:opacity-100 data-[state=open]:opacity-100"
-                />
+                </button>
+                {!selectMode && (
+                  <FolderMenu
+                    onOpen={() => navigate(f.path)}
+                    onDelete={() => removeFolder(f)}
+                    className="absolute right-0.5 top-0.5 bg-background/80 opacity-0 transition-opacity group-hover:opacity-100 data-[state=open]:opacity-100"
+                  />
+                )}
               </div>
             ))}
+            {files.map((f) => {
+              const sel = selected.has(f.path);
+              return (
+                <div
+                  key={f.path}
+                  className={cn(
+                    "group relative flex w-full min-w-0 flex-col items-center gap-1.5 rounded-lg p-2 text-center hover:bg-muted",
+                    sel && "bg-primary/10 ring-1 ring-primary",
+                  )}
+                >
+                  {selectMode ? (
+                    <button
+                      type="button"
+                      onClick={() => toggleSelect(f.path)}
+                      className="flex w-full min-w-0 flex-col items-center gap-1.5"
+                    >
+                      <FileGlyph file={f} big />
+                      <span className="line-clamp-2 w-full break-all text-xs leading-tight">
+                        {f.name}
+                      </span>
+                    </button>
+                  ) : (
+                    <a
+                      href={downloadUrl(f)}
+                      className="flex w-full min-w-0 flex-col items-center gap-1.5"
+                      title="點擊下載"
+                    >
+                      <FileGlyph file={f} big />
+                      <span className="line-clamp-2 w-full break-all text-xs leading-tight">
+                        {f.name}
+                      </span>
+                    </a>
+                  )}
+                  {selectMode ? (
+                    <span className="absolute left-1 top-1">
+                      {sel ? (
+                        <SquareCheckBig className="size-4 text-primary" />
+                      ) : (
+                        <Square className="size-4 text-muted-foreground" />
+                      )}
+                    </span>
+                  ) : (
+                    <FileMenu
+                      file={f}
+                      onDelete={() => removeFile(f)}
+                      className="absolute right-0.5 top-0.5 bg-background/80 opacity-0 transition-opacity group-hover:opacity-100 data-[state=open]:opacity-100"
+                    />
+                  )}
+                </div>
+              );
+            })}
           </div>
         ) : (
           <div className="flex flex-col divide-y">
             {folders.map((f) => (
-              <button
-                key={f.path}
-                type="button"
-                onClick={() => setPath(f.path)}
-                className="flex items-center gap-3 px-3 py-2 text-left hover:bg-muted"
-              >
-                <Folder className="size-4 shrink-0 fill-muted-foreground/20 text-muted-foreground" />
-                <span className="min-w-0 flex-1 truncate text-sm">
-                  {f.name}
-                </span>
-                <ChevronRight className="size-4 shrink-0 text-muted-foreground/50" />
-              </button>
-            ))}
-            {files.map((f) => (
               <div
                 key={f.path}
                 className="group flex items-center gap-3 px-3 py-2 hover:bg-muted"
               >
-                <FileGlyph file={f} />
-                <a
-                  href={`/api/files/download?path=${encodeURIComponent(f.path)}`}
-                  className="min-w-0 flex-1 truncate text-sm hover:underline"
-                  title="點擊下載"
+                <button
+                  type="button"
+                  onClick={() => navigate(f.path)}
+                  className="flex min-w-0 flex-1 items-center gap-3 text-left"
                 >
-                  {f.name}
-                </a>
-                <span className="w-16 shrink-0 text-right text-xs text-muted-foreground">
-                  {humanSize(f.size)}
-                </span>
-                <span className="hidden w-24 shrink-0 text-right text-xs text-muted-foreground sm:block">
-                  {f.uploaded_at ? relativeTime(f.uploaded_at) : ""}
-                </span>
-                <FileMenu
-                  file={f}
-                  onDelete={() => remove(f)}
-                  className="opacity-0 transition-opacity group-hover:opacity-100 data-[state=open]:opacity-100"
-                />
+                  <Folder className="size-4 shrink-0 fill-muted-foreground/20 text-muted-foreground" />
+                  <span className="min-w-0 flex-1 truncate text-sm">
+                    {f.name}
+                  </span>
+                </button>
+                {!selectMode && (
+                  <FolderMenu
+                    onOpen={() => navigate(f.path)}
+                    onDelete={() => removeFolder(f)}
+                    className="opacity-0 transition-opacity group-hover:opacity-100 data-[state=open]:opacity-100"
+                  />
+                )}
               </div>
             ))}
+            {files.map((f) => {
+              const sel = selected.has(f.path);
+              return (
+                <div
+                  key={f.path}
+                  className={cn(
+                    "group flex items-center gap-3 px-3 py-2 hover:bg-muted",
+                    sel && "bg-primary/10",
+                  )}
+                >
+                  {selectMode && (
+                    <button
+                      type="button"
+                      onClick={() => toggleSelect(f.path)}
+                      className="shrink-0"
+                    >
+                      {sel ? (
+                        <SquareCheckBig className="size-4 text-primary" />
+                      ) : (
+                        <Square className="size-4 text-muted-foreground" />
+                      )}
+                    </button>
+                  )}
+                  <FileGlyph file={f} />
+                  {selectMode ? (
+                    <button
+                      type="button"
+                      onClick={() => toggleSelect(f.path)}
+                      className="min-w-0 flex-1 truncate text-left text-sm"
+                    >
+                      {f.name}
+                    </button>
+                  ) : (
+                    <a
+                      href={downloadUrl(f)}
+                      className="min-w-0 flex-1 truncate text-sm hover:underline"
+                      title="點擊下載"
+                    >
+                      {f.name}
+                    </a>
+                  )}
+                  <span className="w-16 shrink-0 text-right text-xs text-muted-foreground">
+                    {humanSize(f.size)}
+                  </span>
+                  <span className="hidden w-24 shrink-0 text-right text-xs text-muted-foreground sm:block">
+                    {f.uploaded_at ? relativeTime(f.uploaded_at) : ""}
+                  </span>
+                  {!selectMode && (
+                    <FileMenu
+                      file={f}
+                      onDelete={() => removeFile(f)}
+                      className="opacity-0 transition-opacity group-hover:opacity-100 data-[state=open]:opacity-100"
+                    />
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
