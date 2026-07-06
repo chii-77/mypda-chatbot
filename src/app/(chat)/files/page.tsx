@@ -1,4 +1,5 @@
 import { getSession } from "auth/server";
+import { getIsUserAdmin } from "lib/user/utils";
 import { redirect } from "next/navigation";
 import { DriveExplorer } from "@/components/files/drive-explorer";
 
@@ -9,7 +10,7 @@ export default async function Page() {
   if (!session?.user) return redirect("/login");
   return (
     <div className="h-dvh">
-      <DriveExplorer />
+      <DriveExplorer isAdmin={getIsUserAdmin(session.user)} />
     </div>
   );
 }

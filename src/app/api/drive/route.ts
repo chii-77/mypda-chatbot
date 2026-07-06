@@ -1,149 +1,192 @@
 import { NextResponse } from "next/server";
 import { getSession } from "auth/server";
-import { mcpClientsManager } from "lib/ai/mcp/mcp-manager";
-import { selectMcpClientsAction } from "../mcp/actions";
+import {
+  encodePath,
+  displaySeg,
+  filesStorageFromEnv,
+  keySeg,
+} from "lib/files/storage";
 
 /**
- * File Explorer ("Drive") backend — a thin server-side proxy that routes every
- * file operation through the DataPilot MCP (files-mcp), NOT the direct Supabase
- * connector used by the legacy /api/files. This makes the UI a thin skin over
- * the exact same tools the chat agent calls (single source of truth: the Python
- * MCP owns E64 non-ASCII handling, categories, and upload validation), so a
- * button click and an agent tool-call do identical things.
+ * File Explorer ("Drive") backend — DIRECT Supabase connector.
  *
- * Auth + per-user isolation are enforced by selectMcpClientsAction (only the
- * caller's own MCP servers are reachable). Heavy fan-out / big downloads stay
- * off this path: downloads use signed URLs via /api/files/download.
+ * Deliberate two-door architecture over the SAME per-account bucket:
+ *   - UI buttons  -> this route -> Supabase directly (fast; no MCP hop)
+ *   - Chat/agent  -> the DataPilot files-mcp tools   (list_dir / upload_document
+ *     / move_file / move_dir / make_dir / delete_dir / delete_file)
+ * Behaviour parity is a hard requirement: this route mirrors the MCP tools'
+ * semantics 1:1 — same E64 non-ASCII key encoding (lib/files/storage.ts
+ * keySeg/displaySeg byte-match the Python _key_seg/_display_seg), same
+ * one-level lazy listing, same upload validation, same response shapes.
+ * /api/drive/parity verifies the alignment on demand.
+ *
+ * Account scope = the session user id — the SAME prefix the MCP sees via
+ * injected identity, so both doors always show identical files.
  */
 
-// Resolve the caller's files-mcp server id. Names are per-user unique
-// (`files-mcp-<id>` after the collision-avoidance rename), so match by the
-// distinctive `list_files` tool first, then fall back to the name prefix.
-async function resolveFilesServerId(): Promise<string> {
-  const servers = await selectMcpClientsAction();
-  const target = servers.find(
-    (s) =>
-      (s.toolInfo ?? []).some((t) => t.name === "list_files") ||
-      (s.name ?? "").startsWith("files-mcp"),
-  );
-  if (!target) throw new Error("FilesUnavailable");
-  return target.id;
+// Upload rules — keep in sync with the MCP's UPLOAD_ALLOWED_EXT / UPLOAD_MAX_MB.
+const ALLOWED_EXT = (process.env.UPLOAD_ALLOWED_EXT || "pdf,csv,md,txt")
+  .split(",")
+  .map((e) => e.trim().toLowerCase().replace(/^\./, ""))
+  .filter(Boolean);
+const MAX_MB = Number(process.env.UPLOAD_MAX_MB || "20");
+const EXT_MIME: Record<string, string> = {
+  pdf: "application/pdf",
+  csv: "text/csv",
+  md: "text/markdown",
+  txt: "text/plain",
+};
+
+function extOf(name: string): string {
+  const i = name.lastIndexOf(".");
+  return i < 0 ? "" : name.slice(i + 1).toLowerCase();
 }
 
-// Pull the structured object out of an MCP tool result (structuredContent, an
-// object text block, or a JSON string) — mirrors the artifact bridge's json().
-function unwrap(result: any): any {
-  if (result?.structuredContent != null) return result.structuredContent;
-  for (const p of result?.content ?? []) {
-    if (p?.type === "text" && p.text != null) {
-      if (typeof p.text === "object") return p.text;
-      try {
-        return JSON.parse(p.text);
-      } catch {
-        return p.text;
-      }
-    }
-  }
-  return null;
+function safeName(name: string): string {
+  // strip directory components; drop control chars; keep unicode
+  const base = (name || "").split(/[/\\]/).pop() || "";
+  const clean = Array.from(base)
+    .filter((c) => c.charCodeAt(0) >= 0x20)
+    .join("")
+    .trim();
+  return clean || `file-${Date.now()}`;
 }
 
-async function callFiles(
-  tool: string,
-  args: Record<string, unknown> = {},
-  serverId?: string,
-) {
-  const id = serverId ?? (await resolveFilesServerId());
-  return unwrap(await mcpClientsManager.toolCall(id, tool, args));
+async function account(): Promise<string | null> {
+  const session = await getSession();
+  return session?.user?.id ?? null;
+}
+
+function unauthorized() {
+  return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 }
 
 function fail(error: unknown) {
   const message = error instanceof Error ? error.message : "Unknown error";
-  const status = message === "FilesUnavailable" ? 503 : 500;
-  return NextResponse.json({ error: message }, { status });
+  return NextResponse.json({ error: message }, { status: 500 });
 }
 
 // GET /api/drive?path=<display path>  -> list one folder level (lazy)
 export async function GET(request: Request) {
-  const session = await getSession();
-  if (!session?.user?.id)
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const acct = await account();
+  if (!acct) return unauthorized();
   const path = new URL(request.url).searchParams.get("path") ?? "";
   try {
-    const data = await callFiles("list_dir", { prefix: path });
-    return NextResponse.json(data ?? { path, folders: [], files: [] });
+    return NextResponse.json(await filesStorageFromEnv().listDir(acct, path));
   } catch (error) {
     return fail(error);
   }
 }
 
-// POST /api/drive  (multipart: file, category?)  -> upload_document
+// POST /api/drive  (multipart: file+category?  OR  mkdir)
 export async function POST(request: Request) {
-  const session = await getSession();
-  if (!session?.user?.id)
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const acct = await account();
+  if (!acct) return unauthorized();
   try {
     const form = await request.formData();
+    const storage = filesStorageFromEnv();
+
     // mkdir: create an (empty) folder at a display path.
     const mkdir = ((form.get("mkdir") as string) || "").trim();
     if (mkdir) {
-      const res = await callFiles("make_dir", { path: mkdir });
-      if (res?.ok === false) return NextResponse.json(res, { status: 422 });
-      return NextResponse.json(res, { status: 201 });
+      if (mkdir.includes("..")) {
+        return NextResponse.json(
+          { ok: false, error: "invalid_path", reason: "路徑不合法" },
+          { status: 422 },
+        );
+      }
+      await storage.makeDir(acct, mkdir.replace(/^\/+|\/+$/g, ""));
+      return NextResponse.json({ ok: true, path: mkdir }, { status: 201 });
     }
+
+    // upload — same validation as the MCP upload_document tool.
     const file = form.get("file");
-    const category = ((form.get("category") as string) || "").trim();
+    const category = ((form.get("category") as string) || "")
+      .trim()
+      .replace(/^\/+|\/+$/g, "");
     if (!(file instanceof File)) {
       return NextResponse.json(
         { error: "No file (field 'file')" },
         { status: 400 },
       );
     }
-    const content_base64 = Buffer.from(await file.arrayBuffer()).toString(
-      "base64",
+    const name = safeName(file.name);
+    const ext = extOf(name);
+    if (!ALLOWED_EXT.includes(ext)) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "unsupported_format",
+          reason: `格式不支援（僅限 ${ALLOWED_EXT.join("/")}）`,
+        },
+        { status: 422 },
+      );
+    }
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (bytes.byteLength > MAX_MB * 1024 * 1024) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "too_large",
+          reason: `超過大小上限 ${MAX_MB} MB`,
+        },
+        { status: 422 },
+      );
+    }
+    const contentType =
+      file.type || EXT_MIME[ext] || "application/octet-stream";
+    const key = (category ? `${encodePath(category)}/` : "") + keySeg(name);
+    await storage.upload(acct, key, bytes, contentType);
+    return NextResponse.json(
+      {
+        ok: true,
+        path: key,
+        name,
+        size: bytes.byteLength,
+        category,
+        content_type: contentType,
+      },
+      { status: 201 },
     );
-    const res = await callFiles("upload_document", {
-      filename: file.name,
-      content_base64,
-      category,
-      content_type: file.type || "",
-    });
-    // upload_document returns {ok:false, error, reason} on validation failure.
-    if (res?.ok === false) return NextResponse.json(res, { status: 422 });
-    return NextResponse.json(res, { status: 201 });
   } catch (error) {
     return fail(error);
   }
 }
 
 // DELETE /api/drive?path=<key>[&type=folder]
-//   file   (default): path = raw storage key from list_dir files[].path
-//   folder (type=folder): path = display path from list_dir folders[].path;
-//                         deletes every file under it recursively.
+//   file   (default): path = raw storage key from listDir files[].path
+//   folder (type=folder): path = display path from listDir folders[].path
 export async function DELETE(request: Request) {
-  const session = await getSession();
-  if (!session?.user?.id)
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const acct = await account();
+  if (!acct) return unauthorized();
   const url = new URL(request.url);
   const path = url.searchParams.get("path");
   if (!path)
     return NextResponse.json({ error: "Missing path" }, { status: 400 });
+  if (path.includes(".."))
+    return NextResponse.json(
+      { ok: false, error: "invalid_path", reason: "路徑不合法" },
+      { status: 422 },
+    );
   try {
+    const storage = filesStorageFromEnv();
     if (url.searchParams.get("type") === "folder") {
-      const res = await callFiles("delete_dir", { prefix: path });
-      return NextResponse.json(res ?? { ok: true });
+      const deleted = await storage.deleteDir(acct, path);
+      return NextResponse.json({ ok: true, deleted });
     }
-    const res = await callFiles("delete_file", { path });
-    return NextResponse.json(res ?? { ok: true });
+    await storage.remove(acct, path);
+    return NextResponse.json({ ok: true, path });
   } catch (error) {
     return fail(error);
   }
 }
 
-// PATCH /api/drive  { src: <raw key>, dst: <display path> }  -> move / rename
+// PATCH /api/drive  { src, dst, type? }
+//   file   (default): src = raw key, dst = display path  -> move/rename file
+//   folder (type=folder): src/dst = display paths        -> move/rename folder
 export async function PATCH(request: Request) {
-  const session = await getSession();
-  if (!session?.user?.id)
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const acct = await account();
+  if (!acct) return unauthorized();
   try {
     const { src, dst, type } = (await request.json().catch(() => ({}))) as {
       src?: string;
@@ -155,12 +198,27 @@ export async function PATCH(request: Request) {
         { error: "src and dst required" },
         { status: 400 },
       );
-    const res =
-      type === "folder"
-        ? await callFiles("move_dir", { src, dst })
-        : await callFiles("move_file", { src, dst });
-    if (res?.ok === false) return NextResponse.json(res, { status: 422 });
-    return NextResponse.json(res ?? { ok: true });
+    if (src.includes("..") || dst.includes(".."))
+      return NextResponse.json(
+        { ok: false, error: "invalid_path", reason: "路徑不合法" },
+        { status: 422 },
+      );
+    const storage = filesStorageFromEnv();
+    const d = dst.trim().replace(/^\/+|\/+$/g, "");
+    if (type === "folder") {
+      const s = src.trim().replace(/^\/+|\/+$/g, "");
+      const moved = await storage.moveDir(acct, s, d);
+      return NextResponse.json({ ok: true, moved, path: d });
+    }
+    const s = src.trim().replace(/^\/+/, "");
+    const dstKey = encodePath(d);
+    if (dstKey !== s) await storage.move(acct, s, dstKey);
+    return NextResponse.json({
+      ok: true,
+      src: s,
+      path: dstKey,
+      name: displaySeg(d.split("/").pop() ?? ""),
+    });
   } catch (error) {
     return fail(error);
   }

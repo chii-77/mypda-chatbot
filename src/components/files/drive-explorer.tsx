@@ -14,13 +14,20 @@ import {
   ContextMenuTrigger,
 } from "ui/context-menu";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "ui/dialog";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "ui/dropdown-menu";
 import { toast } from "sonner";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import {
   ArrowDown,
@@ -43,6 +50,7 @@ import {
   Loader2,
   Pencil,
   RefreshCw,
+  ShieldCheck,
   Square,
   SquareCheckBig,
   Trash2,
@@ -122,9 +130,193 @@ function downloadUrl(file: DriveFile) {
   return `/api/files/download?path=${encodeURIComponent(file.path)}`;
 }
 
-export function DriveExplorer() {
+// ── MCP parity check (admin) ────────────────────────────────────────────────
+// The Files UI talks to Supabase directly for speed, while the chat agent uses
+// the DataPilot MCP tools. This dialog verifies the two doors stay 1:1 aligned:
+// operation mapping + a live listing comparison with per-door latency.
+type ParityData = {
+  ok: boolean;
+  error?: string;
+  server?: { id: string; name: string; toolCount: number };
+  mapping?: {
+    aligned: { web: string; label: string; mcp: string }[];
+    webOnly: { web: string; label: string; mcp: string }[];
+    mcpOnly: string[];
+  };
+  live?: {
+    error: string | null;
+    equal: boolean;
+    directMs: number;
+    mcpMs: number;
+    onlyDirect: { folders: string[]; files: string[] } | null;
+    onlyMcp: { folders: string[]; files: string[] } | null;
+  };
+};
+
+function ParityDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+}) {
+  const [data, setData] = useState<ParityData | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const run = useCallback(async () => {
+    setLoading(true);
+    setData(null);
+    try {
+      const res = await fetch("/api/drive/parity");
+      setData(await res.json());
+    } catch (e: any) {
+      setData({ ok: false, error: e?.message ?? "檢查失敗" });
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (open) run();
+  }, [open, run]);
+
+  const live = data?.live;
+  const map = data?.mapping;
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[80vh] max-w-lg overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <ShieldCheck className="size-4" /> Web API ↔ MCP 對齊檢查
+          </DialogTitle>
+          <DialogDescription>
+            UI 走直連 API（快）、聊天走 MCP 工具；此檢查驗證兩者行為一對一對齊。
+          </DialogDescription>
+        </DialogHeader>
+        {loading ? (
+          <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" />
+            檢查中…（MCP 那一跳較慢，屬正常）
+          </div>
+        ) : !data ? null : !data.ok ? (
+          <div className="py-4 text-sm text-destructive">{data.error}</div>
+        ) : (
+          <div className="space-y-4 text-sm">
+            {/* live comparison */}
+            <div className="rounded-md border p-3">
+              <div className="mb-1.5 font-medium">
+                實測：根目錄清單（雙門對比）
+              </div>
+              {live?.error ? (
+                <div className="text-destructive">{live.error}</div>
+              ) : (
+                <>
+                  <div className="flex items-center gap-2">
+                    {live?.equal ? (
+                      <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 font-medium text-emerald-600">
+                        ✓ 內容一致
+                      </span>
+                    ) : (
+                      <span className="rounded bg-destructive/15 px-1.5 py-0.5 font-medium text-destructive">
+                        ✗ 內容不一致
+                      </span>
+                    )}
+                    <span className="text-muted-foreground">
+                      直連 {live?.directMs}ms · MCP {live?.mcpMs}ms
+                    </span>
+                  </div>
+                  {!live?.equal && (
+                    <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                      {!!(
+                        live?.onlyDirect &&
+                        (live.onlyDirect.folders.length ||
+                          live.onlyDirect.files.length)
+                      ) && (
+                        <div>
+                          只有直連看到：
+                          {[
+                            ...live.onlyDirect.folders,
+                            ...live.onlyDirect.files,
+                          ].join("、")}
+                        </div>
+                      )}
+                      {!!(
+                        live?.onlyMcp &&
+                        (live.onlyMcp.folders.length ||
+                          live.onlyMcp.files.length)
+                      ) && (
+                        <div>
+                          只有 MCP 看到：
+                          {[
+                            ...live.onlyMcp.folders,
+                            ...live.onlyMcp.files,
+                          ].join("、")}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* operation mapping */}
+            <div className="rounded-md border p-3">
+              <div className="mb-1.5 font-medium">
+                操作對照（{data.server?.name}，{data.server?.toolCount} 個工具）
+              </div>
+              <div className="space-y-1">
+                {map?.aligned.map((m) => (
+                  <div key={m.web} className="flex items-center gap-2 text-xs">
+                    <span className="text-emerald-600">✓</span>
+                    <span className="min-w-0 flex-1 truncate">{m.label}</span>
+                    <code className="text-muted-foreground">{m.mcp}</code>
+                  </div>
+                ))}
+                {map?.webOnly.map((m) => (
+                  <div key={m.web} className="flex items-center gap-2 text-xs">
+                    <span className="text-destructive">✗</span>
+                    <span className="min-w-0 flex-1 truncate">{m.label}</span>
+                    <code className="text-muted-foreground">
+                      缺 {m.mcp}（MCP 無此工具）
+                    </code>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* mcp-only tools */}
+            {!!map?.mcpOnly.length && (
+              <div className="rounded-md border p-3">
+                <div className="mb-1.5 font-medium">
+                  MCP 獨有工具（聊天可用，UI 無對應按鈕）
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {map.mcpOnly.map((t) => (
+                    <code
+                      key={t}
+                      className="rounded bg-muted px-1.5 py-0.5 text-xs"
+                    >
+                      {t}
+                    </code>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <Button variant="outline" size="sm" onClick={run}>
+              <RefreshCw className="size-4" /> 重新檢查
+            </Button>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+export function DriveExplorer({ isAdmin = false }: { isAdmin?: boolean }) {
   const [path, setPath] = useState(""); // current folder (display path)
   const [view, setView] = useState<"grid" | "list">("grid");
+  const [parityOpen, setParityOpen] = useState(false);
   const [sortBy, setSortBy] = useState<SortKey>("name");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [selectMode, setSelectMode] = useState(false);
@@ -1001,10 +1193,23 @@ export function DriveExplorer() {
             {folders.length > 0 && `${folders.length} 個資料夾 · `}
             {files.length} 個檔案
           </span>
-          <span>
-            在項目或空白處按右鍵可用更多功能 · DataPilot 管理,與 AI 助理同步
+          <span className="flex items-center gap-2">
+            在項目或空白處按右鍵可用更多功能 · 與 AI 助理同步
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => setParityOpen(true)}
+                className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground"
+                title="驗證 Web API 與 MCP 工具是否一對一對齊"
+              >
+                <ShieldCheck className="size-3.5" /> MCP 對齊檢查
+              </button>
+            )}
           </span>
         </div>
+        {isAdmin && (
+          <ParityDialog open={parityOpen} onOpenChange={setParityOpen} />
+        )}
       </div>
     </div>
   );
