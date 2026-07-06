@@ -139,20 +139,20 @@ export function AppSidebarMenus({ user }: { user?: BasicUser }) {
             </SidebarMenuItem>
           </SidebarMenu>
         )}
-        {/* File Explorer (DataPilot drive). Admin-only for now; flip to show for
-            all users once validated. Links to the /files DriveExplorer page. */}
-        {getIsUserAdmin(user) && (
-          <SidebarMenu>
-            <SidebarMenuItem>
-              <Link href="/files" onClick={() => setOpenMobile(false)}>
-                <SidebarMenuButton className="font-medium">
-                  <FolderOpenIcon className="size-4" />
-                  檔案總管
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-          </SidebarMenu>
-        )}
+        {/* File Explorer (DataPilot drive) — open to all logged-in users.
+            Links to the /files DriveExplorer page; per-user file isolation is
+            enforced server-side by the MCP identity, so every user sees only
+            their own files. */}
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <Link href="/files" onClick={() => setOpenMobile(false)}>
+              <SidebarMenuButton className="font-medium">
+                <FolderOpenIcon className="size-4" />
+                檔案總管
+              </SidebarMenuButton>
+            </Link>
+          </SidebarMenuItem>
+        </SidebarMenu>
         {/* Hidden per docs/DISABLED_FEATURES.md (UI_FLAGS.archive) */}
         {UI_FLAGS.archive && (
           <SidebarMenu className="group/archive">
