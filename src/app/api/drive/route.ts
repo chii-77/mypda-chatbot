@@ -56,25 +56,6 @@ async function callFiles(
   return unwrap(await mcpClientsManager.toolCall(id, tool, args));
 }
 
-// Recursively delete a folder: list one level, delete its files, recurse into
-// subfolders. Uses list_dir (display paths) + delete_file (raw keys) so E64
-// non-ASCII names are handled correctly. Server id resolved once by the caller.
-async function deleteFolderRecursive(
-  prefix: string,
-  serverId: string,
-): Promise<number> {
-  const listing = await callFiles("list_dir", { prefix }, serverId);
-  let n = 0;
-  for (const f of listing?.files ?? []) {
-    await callFiles("delete_file", { path: f.path }, serverId);
-    n++;
-  }
-  for (const sub of listing?.folders ?? []) {
-    n += await deleteFolderRecursive(sub.path, serverId);
-  }
-  return n;
-}
-
 function fail(error: unknown) {
   const message = error instanceof Error ? error.message : "Unknown error";
   const status = message === "FilesUnavailable" ? 503 : 500;
@@ -102,6 +83,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
     const form = await request.formData();
+    // mkdir: create an (empty) folder at a display path.
+    const mkdir = ((form.get("mkdir") as string) || "").trim();
+    if (mkdir) {
+      const res = await callFiles("make_dir", { path: mkdir });
+      if (res?.ok === false) return NextResponse.json(res, { status: 422 });
+      return NextResponse.json(res, { status: 201 });
+    }
     const file = form.get("file");
     const category = ((form.get("category") as string) || "").trim();
     if (!(file instanceof File)) {
@@ -141,11 +129,37 @@ export async function DELETE(request: Request) {
     return NextResponse.json({ error: "Missing path" }, { status: 400 });
   try {
     if (url.searchParams.get("type") === "folder") {
-      const id = await resolveFilesServerId();
-      const deleted = await deleteFolderRecursive(path, id);
-      return NextResponse.json({ ok: true, deleted });
+      const res = await callFiles("delete_dir", { prefix: path });
+      return NextResponse.json(res ?? { ok: true });
     }
     const res = await callFiles("delete_file", { path });
+    return NextResponse.json(res ?? { ok: true });
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+// PATCH /api/drive  { src: <raw key>, dst: <display path> }  -> move / rename
+export async function PATCH(request: Request) {
+  const session = await getSession();
+  if (!session?.user?.id)
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  try {
+    const { src, dst, type } = (await request.json().catch(() => ({}))) as {
+      src?: string;
+      dst?: string;
+      type?: string;
+    };
+    if (!src || !dst)
+      return NextResponse.json(
+        { error: "src and dst required" },
+        { status: 400 },
+      );
+    const res =
+      type === "folder"
+        ? await callFiles("move_dir", { src, dst })
+        : await callFiles("move_file", { src, dst });
+    if (res?.ok === false) return NextResponse.json(res, { status: 422 });
     return NextResponse.json(res ?? { ok: true });
   } catch (error) {
     return fail(error);
