@@ -2,12 +2,20 @@
 import { fetcher, cn } from "lib/utils";
 import { relativeTime } from "lib/memory/format";
 import { Button } from "ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "ui/dropdown-menu";
 import { toast } from "sonner";
 import { useCallback, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import {
   ChevronRight,
   ChevronUp,
+  Download,
   FileIcon,
   FileText,
   FileSpreadsheet,
@@ -16,6 +24,7 @@ import {
   LayoutGrid,
   List as ListIcon,
   Loader2,
+  MoreHorizontal,
   RefreshCw,
   Trash2,
   Upload,
@@ -55,6 +64,52 @@ function FileGlyph({ file, big }: { file: DriveFile; big?: boolean }) {
   else if (["md", "txt", "markdown"].includes(ext) || ct.startsWith("text/"))
     Icon = FileText;
   return <Icon className={cn(size, "shrink-0 text-muted-foreground")} />;
+}
+
+// Per-file "⋯" menu — replaces desktop right-click with an on-screen control.
+function FileMenu({
+  file,
+  onDelete,
+  className,
+}: {
+  file: DriveFile;
+  onDelete: () => void;
+  className?: string;
+}) {
+  const dl = `/api/files/download?path=${encodeURIComponent(file.path)}`;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          title="更多"
+          onClick={(e) => e.stopPropagation()}
+          className={cn(
+            "rounded p-1 text-muted-foreground hover:bg-foreground/10 hover:text-foreground",
+            className,
+          )}
+        >
+          <MoreHorizontal className="size-4" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+        <DropdownMenuItem asChild>
+          <a href={dl}>
+            <Download className="mr-2 size-4" />
+            下載
+          </a>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          onSelect={onDelete}
+          className="text-destructive focus:text-destructive"
+        >
+          <Trash2 className="mr-2 size-4" />
+          刪除
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
 }
 
 export function DriveExplorer() {
@@ -274,17 +329,16 @@ export function DriveExplorer() {
             這個資料夾是空的。把檔案拖進來,或用右上角「上傳」。
           </div>
         ) : view === "grid" ? (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(112px,1fr))] gap-1 p-3">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(116px,1fr))] gap-1 p-3">
             {folders.map((f) => (
               <button
                 key={f.path}
                 type="button"
-                onDoubleClick={() => setPath(f.path)}
                 onClick={() => setPath(f.path)}
-                className="group flex flex-col items-center gap-1.5 rounded-lg p-3 text-center hover:bg-muted"
+                className="group flex w-full min-w-0 flex-col items-center gap-1.5 rounded-lg p-2 text-center hover:bg-muted"
               >
                 <Folder className="size-9 shrink-0 fill-muted-foreground/20 text-muted-foreground" />
-                <span className="line-clamp-2 w-full break-words text-xs">
+                <span className="line-clamp-2 w-full break-all text-xs leading-tight">
                   {f.name}
                 </span>
               </button>
@@ -292,26 +346,23 @@ export function DriveExplorer() {
             {files.map((f) => (
               <div
                 key={f.path}
-                className="group relative flex flex-col items-center gap-1.5 rounded-lg p-3 text-center hover:bg-muted"
+                className="group relative flex w-full min-w-0 flex-col items-center gap-1.5 rounded-lg p-2 text-center hover:bg-muted"
               >
                 <a
                   href={`/api/files/download?path=${encodeURIComponent(f.path)}`}
-                  className="flex flex-col items-center gap-1.5"
+                  className="flex w-full min-w-0 flex-col items-center gap-1.5"
                   title="點擊下載"
                 >
                   <FileGlyph file={f} big />
-                  <span className="line-clamp-2 w-full break-words text-xs">
+                  <span className="line-clamp-2 w-full break-all text-xs leading-tight">
                     {f.name}
                   </span>
                 </a>
-                <button
-                  type="button"
-                  onClick={() => remove(f)}
-                  className="absolute right-1 top-1 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
-                  title="刪除"
-                >
-                  <Trash2 className="size-3.5" />
-                </button>
+                <FileMenu
+                  file={f}
+                  onDelete={() => remove(f)}
+                  className="absolute right-0.5 top-0.5 bg-background/80 opacity-0 transition-opacity group-hover:opacity-100 data-[state=open]:opacity-100"
+                />
               </div>
             ))}
           </div>
@@ -350,14 +401,11 @@ export function DriveExplorer() {
                 <span className="hidden w-24 shrink-0 text-right text-xs text-muted-foreground sm:block">
                   {f.uploaded_at ? relativeTime(f.uploaded_at) : ""}
                 </span>
-                <button
-                  type="button"
-                  onClick={() => remove(f)}
-                  className="rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
-                  title="刪除"
-                >
-                  <Trash2 className="size-4" />
-                </button>
+                <FileMenu
+                  file={f}
+                  onDelete={() => remove(f)}
+                  className="opacity-0 transition-opacity group-hover:opacity-100 data-[state=open]:opacity-100"
+                />
               </div>
             ))}
           </div>
