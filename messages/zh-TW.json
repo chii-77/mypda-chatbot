@@ -69,7 +69,7 @@
       "createAccount": "建立賬戶"
     },
     "Intro": {
-      "description": "歡迎來到 MCP 聊天機器人。登入以體驗我們的 AI 驅動的對話工具。"
+      "description": "歡迎使用 myPDA —— 你的 AI 智慧助理平台。登入即可運用記憶、檔案與技能工具，讓 Agent 為你完成工作。"
     }
   },
   "Chat": {
