@@ -22,6 +22,7 @@ import { useShallow } from "zustand/shallow";
 import { ChatMention, ChatModel } from "app-types/chat";
 import dynamic from "next/dynamic";
 import { ToolModeDropdown } from "./tool-mode-dropdown";
+import { RuntimeToggle } from "./runtime-toggle";
 
 import { ToolSelectDropdown } from "./tool-select-dropdown";
 import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
@@ -569,6 +570,7 @@ export default function PromptInput({
                     </Button>
                   ) : (
                     <>
+                      <RuntimeToggle />
                       <ToolModeDropdown />
                       <ToolSelectDropdown
                         className="mx-1"

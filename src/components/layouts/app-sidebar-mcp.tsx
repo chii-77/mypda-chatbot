@@ -2,6 +2,7 @@
 import { renameMcpCategoryAction } from "@/app/api/mcp/actions";
 import { useMcpList } from "@/hooks/queries/use-mcp-list";
 import type { MCPServerInfo } from "app-types/mcp";
+import { UI_FLAGS } from "lib/ui-flags";
 import {
   BrainIcon,
   Check,
@@ -157,42 +158,43 @@ export function AppSidebarMcp() {
         </SidebarMenuItem>
       </SidebarMenu>
 
-      {groups.map(([groupKey, servers]) => (
-        <SidebarMenu key={groupKey} className="mt-2">
-          <CategoryLabel groupKey={groupKey} />
-          {servers.flatMap((server) => {
-            const panels = SERVER_PANELS[server.name];
-            // No custom panels: the server itself is the item (-> test page).
-            if (!panels) {
-              const href = `/mcp/test/${server.id}`;
-              return [
-                <SidebarMenuItem key={server.id}>
-                  <Link href={href}>
-                    <SidebarMenuButton isActive={pathname === href}>
-                      <ServerIcon className="size-4" />
-                      <span className="truncate">{server.name}</span>
-                    </SidebarMenuButton>
-                  </Link>
-                </SidebarMenuItem>,
-              ];
-            }
-            // Has panels: list each panel as a flat item.
-            return panels.map((panel) => {
-              const Icon = panel.icon;
-              return (
-                <SidebarMenuItem key={`${server.id}-${panel.key}`}>
-                  <Link href={panel.href}>
-                    <SidebarMenuButton isActive={pathname === panel.href}>
-                      <Icon className="size-4" />
-                      <span className="truncate">{panel.label}</span>
-                    </SidebarMenuButton>
-                  </Link>
-                </SidebarMenuItem>
-              );
-            });
-          })}
-        </SidebarMenu>
-      ))}
+      {UI_FLAGS.mcpServerList &&
+        groups.map(([groupKey, servers]) => (
+          <SidebarMenu key={groupKey} className="mt-2">
+            <CategoryLabel groupKey={groupKey} />
+            {servers.flatMap((server) => {
+              const panels = SERVER_PANELS[server.name];
+              // No custom panels: the server itself is the item (-> test page).
+              if (!panels) {
+                const href = `/mcp/test/${server.id}`;
+                return [
+                  <SidebarMenuItem key={server.id}>
+                    <Link href={href}>
+                      <SidebarMenuButton isActive={pathname === href}>
+                        <ServerIcon className="size-4" />
+                        <span className="truncate">{server.name}</span>
+                      </SidebarMenuButton>
+                    </Link>
+                  </SidebarMenuItem>,
+                ];
+              }
+              // Has panels: list each panel as a flat item.
+              return panels.map((panel) => {
+                const Icon = panel.icon;
+                return (
+                  <SidebarMenuItem key={`${server.id}-${panel.key}`}>
+                    <Link href={panel.href}>
+                      <SidebarMenuButton isActive={pathname === panel.href}>
+                        <Icon className="size-4" />
+                        <span className="truncate">{panel.label}</span>
+                      </SidebarMenuButton>
+                    </Link>
+                  </SidebarMenuItem>
+                );
+              });
+            })}
+          </SidebarMenu>
+        ))}
     </>
   );
 }

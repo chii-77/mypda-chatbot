@@ -52,10 +52,182 @@ import { nanoBananaTool, openaiImageTool } from "lib/ai/tools/image";
 import { DefaultToolName, ImageToolName } from "lib/ai/tools";
 import { buildCsvIngestionPreviewParts } from "@/lib/ai/ingest/csv-ingest";
 import { serverFileStorage } from "lib/file-storage";
+import { storageKeyFromUrl } from "@/lib/file-storage/storage-utils";
+import type { ChatAttachment } from "app-types/chat";
 
 const logger = globalLogger.withDefaults({
   message: colorize("blackBright", `Chat API: `),
 });
+
+// Note: the Code runtime (OpenCode) streams browser-direct from the OpenCode
+// bridge (see lib/ai/opencode-runtime.ts), NOT through this route — so no long
+// serverless duration is needed here. This route stays on Vercel defaults.
+
+/**
+ * Code runtime: forward the user's prompt to the OpenCode backend (bridge
+ * `/run` SSE endpoint) with the current user's identity, and stream the
+ * progress + final result into the chat message as text. Deterministic — no
+ * chat LLM orchestrating. Requires env OPENCODE_RUN_URL (+ OPENCODE_RUN_TOKEN).
+ */
+// Upload limits when feeding attachments into the OpenCode workspace.
+const OPENCODE_MAX_FILES = 20;
+const OPENCODE_MAX_FILE_BYTES = 5 * 1024 * 1024; // 5 MB per file
+const OPENCODE_MAX_TOTAL_BYTES = 15 * 1024 * 1024; // 15 MB total
+
+/** Download the chat attachments and encode them for the OpenCode workspace. */
+async function collectOpenCodeFiles(
+  attachments: ChatAttachment[],
+): Promise<{ name: string; content_b64: string }[]> {
+  const out: { name: string; content_b64: string }[] = [];
+  let total = 0;
+  for (const att of attachments) {
+    if (out.length >= OPENCODE_MAX_FILES) break;
+    const key = storageKeyFromUrl(att.url);
+    if (!key) continue; // external source-url (not our storage) → skip
+    try {
+      const buf = await serverFileStorage.download(key);
+      if (buf.length > OPENCODE_MAX_FILE_BYTES) continue;
+      if (total + buf.length > OPENCODE_MAX_TOTAL_BYTES) break;
+      total += buf.length;
+      out.push({
+        name: att.filename || key.split("/").pop() || "file",
+        content_b64: buf.toString("base64"),
+      });
+    } catch {
+      // not in our storage / download failed → skip
+    }
+  }
+  return out;
+}
+
+async function streamOpenCodeRuntime({
+  dataStream,
+  userText,
+  attachments,
+  user,
+  signal,
+}: {
+  dataStream: {
+    write: (chunk: any) => void;
+  };
+  userText: string;
+  attachments: ChatAttachment[];
+  user: { id: string; email?: string | null; name?: string | null };
+  signal?: AbortSignal;
+}) {
+  const textId = generateUUID();
+  dataStream.write({ type: "text-start", id: textId });
+  const write = (delta: string) =>
+    dataStream.write({ type: "text-delta", id: textId, delta });
+  const end = () => dataStream.write({ type: "text-end", id: textId });
+
+  const runUrl = process.env.OPENCODE_RUN_URL;
+  const runToken = process.env.OPENCODE_RUN_TOKEN;
+  if (!runUrl) {
+    write("⚠️ Code 模式尚未設定(伺服器缺少 OPENCODE_RUN_URL)。");
+    return end();
+  }
+  if (!userText) {
+    write("請輸入要 OpenCode 產生或修改的內容。");
+    return end();
+  }
+
+  const files = attachments?.length
+    ? await collectOpenCodeFiles(attachments)
+    : [];
+
+  try {
+    const res = await fetch(`${runUrl.replace(/\/$/, "")}/run`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(runToken ? { authorization: `Bearer ${runToken}` } : {}),
+        "x-mypda-user-id": user.id,
+        "x-mypda-email": user.email || "",
+        "x-mypda-role": (user as { role?: string }).role || "",
+        "x-mypda-name": user.name || "",
+      },
+      body: JSON.stringify({ prompt: userText, files }),
+      signal,
+    });
+    if (!res.ok || !res.body) {
+      write(`⚠️ OpenCode 後端錯誤(HTTP ${res.status})。`);
+      return end();
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    let gotResult = false;
+    // artifact.html this run produced/changed (rendered after the text part)
+    let artifact: { html: string; diff?: string } | null = null;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(line.indexOf(":") + 1).trim();
+        if (!payload) continue;
+        let evt: any;
+        try {
+          evt = JSON.parse(payload);
+        } catch {
+          continue;
+        }
+        if (evt.type === "progress") {
+          write(`> ${evt.message}\n`);
+        } else if (evt.type === "result") {
+          gotResult = true;
+          write(
+            evt.status === "done"
+              ? `\n${evt.text || "(無內容)"}\n`
+              : `\n⚠️ 失敗:${evt.error || "unknown"}\n`,
+          );
+          if (evt.status === "done" && evt.artifact?.html) {
+            artifact = evt.artifact;
+            // Show the line-level diff for edits (empty for a brand-new one).
+            if (evt.artifact.diff?.trim()) {
+              write(
+                `\n**變更(diff):**\n\`\`\`diff\n${evt.artifact.diff}\`\`\`\n`,
+              );
+            }
+          }
+        } else if (evt.type === "error") {
+          write(`\n⚠️ ${evt.error || "unknown"}\n`);
+        }
+      }
+    }
+    if (!gotResult) write("\n(連線結束,未取得結果)\n");
+    end(); // close the text part first
+    // Then render the artifact as the SAME interactive component myPDA uses —
+    // an output-available `create_mcp_artifact` tool part built from its input.
+    if (artifact?.html) {
+      const toolCallId = generateUUID();
+      dataStream.write({
+        type: "tool-input-available",
+        toolCallId,
+        toolName: DefaultToolName.CreateMcpArtifact,
+        input: {
+          title: "OpenCode Artifact",
+          description: null,
+          html: artifact.html,
+          allowedServers: null,
+        },
+      });
+      dataStream.write({
+        type: "tool-output-available",
+        toolCallId,
+        output: "Artifact created.",
+      });
+    }
+    return;
+  } catch (e: any) {
+    write(`\n⚠️ OpenCode 連線失敗:${e?.message || e}\n`);
+    end();
+  }
+}
 
 export async function POST(request: Request) {
   try {
@@ -71,6 +243,7 @@ export async function POST(request: Request) {
       message,
       chatModel,
       toolChoice,
+      runtime = "normal",
       allowedAppDefaultToolkit,
       allowedMcpServers,
       imageTool,
@@ -205,6 +378,27 @@ export async function POST(request: Request) {
 
     const stream = createUIMessageStream({
       execute: async ({ writer: dataStream }) => {
+        // ── Code runtime (OpenCode) ──────────────────────────────────────
+        // When the "⚙️ Code" switch is on, DON'T run the LLM+tools loop.
+        // Route the user's message straight to the OpenCode backend and stream
+        // its progress + result into this same chat message. No chat-LLM in the
+        // loop → no double-agent, no polling.
+        if (runtime === "code") {
+          metadata.chatModel = { provider: "opencode", model: "code-runtime" };
+          await streamOpenCodeRuntime({
+            dataStream,
+            userText: message.parts
+              .filter((p: any) => p?.type === "text")
+              .map((p: any) => p.text)
+              .join("\n")
+              .trim(),
+            attachments,
+            user: session.user,
+            signal: request.signal,
+          });
+          return;
+        }
+
         const MCP_TOOLS = await safe()
           .map(errorIf(() => !isToolCallAllowed && "Not allowed"))
           .map(() =>

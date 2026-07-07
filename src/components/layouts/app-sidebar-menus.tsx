@@ -87,11 +87,13 @@ export function AppSidebarMenus({ user }: { user?: BasicUser }) {
             </SidebarMenuItem>
           </Tooltip>
         </SidebarMenu>
-        {/* MCP servers, flat (no collapse) and grouped by user-defined category
-            labels. Files / Memories are server panels. See app-sidebar-mcp.tsx. */}
+        {/* MCP: always shows the「MCP 管理儀表板」button (-> /mcp). The noisy
+            per-server list under it is gated by UI_FLAGS.mcpServerList inside
+            the component. See app-sidebar-mcp.tsx. */}
         <AppSidebarMcp />
-        {/* Global replay/demo conversations (shared across all accounts). */}
-        <AppSidebarReplay />
+        {/* Global replay/demo conversations (shared across all accounts).
+            Hidden per docs/DISABLED_FEATURES.md (UI_FLAGS.replay). */}
+        {UI_FLAGS.replay && <AppSidebarReplay />}
         {/* Per-user saved (pinned) MCP Artifacts (UI_FLAGS.savedArtifacts). */}
         {UI_FLAGS.savedArtifacts && <AppSidebarArtifacts />}
         {/* Hidden per docs/DISABLED_FEATURES.md (UI_FLAGS.workflow) */}
@@ -137,6 +139,20 @@ export function AppSidebarMenus({ user }: { user?: BasicUser }) {
             </SidebarMenuItem>
           </SidebarMenu>
         )}
+        {/* File Explorer (DataPilot drive) — open to all logged-in users.
+            Links to the /files DriveExplorer page; per-user file isolation is
+            enforced server-side by the MCP identity, so every user sees only
+            their own files. */}
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <Link href="/files" onClick={() => setOpenMobile(false)}>
+              <SidebarMenuButton className="font-medium">
+                <FolderOpenIcon className="size-4" />
+                檔案總管
+              </SidebarMenuButton>
+            </Link>
+          </SidebarMenuItem>
+        </SidebarMenu>
         {/* Hidden per docs/DISABLED_FEATURES.md (UI_FLAGS.archive) */}
         {UI_FLAGS.archive && (
           <SidebarMenu className="group/archive">

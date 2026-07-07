@@ -31,6 +31,9 @@ export interface AppState {
   // Does not affect stored or transmitted text. Default on.
   displayTraditional: boolean;
   toolChoice: "auto" | "none" | "manual";
+  // Runtime engine for the chat: "normal" = Better Chatbot (LLM + tools),
+  // "code" = OpenCode (messages routed directly to the OpenCode backend).
+  runtime: "normal" | "code";
   allowedMcpServers?: Record<string, AllowedMCPServer>;
   allowedAppDefaultToolkit?: AppDefaultToolkit[];
   generatingTitleThreadIds: string[];
@@ -87,6 +90,7 @@ const initialState: AppState = {
   currentThreadId: null,
   displayTraditional: true,
   toolChoice: "auto",
+  runtime: "normal",
   allowedMcpServers: undefined,
   openUserSettings: false,
   allowedAppDefaultToolkit: [
@@ -128,6 +132,7 @@ export const appStore = create<AppState & AppDispatch>()(
         chatModel: state.chatModel || initialState.chatModel,
         displayTraditional: state.displayTraditional ?? true,
         toolChoice: state.toolChoice || initialState.toolChoice,
+        runtime: state.runtime || initialState.runtime,
         allowedMcpServers:
           state.allowedMcpServers || initialState.allowedMcpServers,
         allowedAppDefaultToolkit: (

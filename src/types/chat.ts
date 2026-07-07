@@ -103,6 +103,7 @@ export const chatApiSchemaRequestBodySchema = z.object({
     })
     .optional(),
   toolChoice: z.enum(["auto", "none", "manual"]),
+  runtime: z.enum(["normal", "code"]).optional(),
   mentions: z.array(ChatMentionSchema).optional(),
   imageTool: z.object({ model: z.string().optional() }).optional(),
   allowedMcpServers: z.record(z.string(), AllowedMCPServerZodSchema).optional(),
